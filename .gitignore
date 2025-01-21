@@ -2,3 +2,6 @@
 orekit-data
 *.oem
 *.ipynb
+.vscode
+*/**/__pycache__
+__pycache__
