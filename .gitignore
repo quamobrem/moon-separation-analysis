@@ -1,0 +1,4 @@
+.venv
+orekit-data
+*.oem
+*.ipynb
