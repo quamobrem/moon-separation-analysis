@@ -1,5 +1,6 @@
 import argparse
-from math import radians
+import logging
+from math import degrees, radians
 from datetime import datetime as dt
 import numpy as np
 
@@ -23,6 +24,7 @@ from org.orekit.orbits import OrbitType
 from org.orekit.forces.gravity import NewtonianAttraction, ThirdBodyAttraction
 from org.orekit.propagation.events import ApsideDetector, EventsLogger
 from org.orekit.propagation.events.handlers import StopOnEvent
+from org.orekit.forces.maneuvers import SmallManeuverAnalyticalModel
 
 
 from orekit import JArray_double
@@ -33,6 +35,10 @@ maxstep = 1000.0
 initStep = 60.0
 positionTolerance = 1.0
 step = 60
+
+
+logging.basicConfig(level=logging.INFO)
+module_logger = logging.getLogger(__name__)
 
 
 def setup_orekit():
@@ -174,7 +180,7 @@ def setup_propagation_context(initialDate: AbsoluteDate, initialOrbit: Keplerian
     return linspace
 
 
-def propagate_to_target_apsis(
+def propagate_to_separation_apsis(
     propagator: NumericalPropagator,
     initialDate: AbsoluteDate,
     initialOrbit: KeplerianOrbit,
@@ -185,7 +191,41 @@ def propagate_to_target_apsis(
         initialDate.shiftedBy(initialOrbit.getKeplerianPeriod())
     )
 
-    print(state)
+    true_anomaly = degrees(
+        round(
+            KeplerianOrbit(
+                OrbitType.KEPLERIAN.convertType(state.getOrbit())
+            ).getTrueAnomaly()
+        )
+    )
+    need_to_propagate_more = True
+    if apsis == "periapsis":
+        if true_anomaly == 0.0:
+            module_logger.info("We are at periapsis, which is where we want to be")
+            need_to_propagate_more = False
+        else:
+            module_logger.info(
+                "We are at periapsis, but we want to start at apoapsis. Propagating until next stopping condition."
+            )
+
+    else:
+        if true_anomaly == 180.0:
+            module_logger.info("We are at apoapsis, which is where we want to be")
+            need_to_propagate_more = False
+        else:
+            module_logger.info(
+                "We are at periapsis, but we want to start at apoapsis. Propagating until next stopping condition."
+            )
+
+    if need_to_propagate_more:
+        state = propagator.propagate(
+            initialDate.shiftedBy(initialOrbit.getKeplerianPeriod())
+        )
+
+    module_logger.info(
+        f"Starting state at separation is {state.getDate()}, {state.getOrbit()}"
+    )
+    return state
 
 
 def main():
@@ -196,10 +236,12 @@ def main():
         initial_datetime = dt.fromisoformat(args.initial_epoch)
         altitude_of_apoapsis = args.altitude_of_apoapsis * 1000
         altitude_of_periapsis = args.altitude_of_periapsis * 1000
-        inclination = args.inclination
-        right_ascension_of_ascending_node = args.right_ascension_of_ascending_node
-        argument_of_periapsis = args.argument_of_periapsis
-        true_anomaly = args.true_anomaly
+        inclination = radians(args.inclination)
+        right_ascension_of_ascending_node = radians(
+            args.right_ascension_of_ascending_node
+        )
+        argument_of_periapsis = radians(args.argument_of_periapsis)
+        true_anomaly = radians(args.true_anomaly)
         spacecraft_masses = args.spacecraft_masses
         separation_to_achieve = args.separation_to_achieve
         impulse_at_which_apsis = args.impulse_at_which_apsis
@@ -224,7 +266,7 @@ def main():
             initialOrbit=initialOrbit, initialState=initialState
         )
 
-        propagate_to_target_apsis(
+        state_at_separation = propagate_to_separation_apsis(
             propagator_num, initialDate, initialOrbit, impulse_at_which_apsis
         )
 
