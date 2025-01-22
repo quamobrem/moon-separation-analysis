@@ -1,8 +1,13 @@
 from datetime import datetime as dt
 import inspect
+from pathlib import Path
 from typing import List
 
-from orekit.pyhelpers import absolutedate_to_datetime
+import numpy as np
+
+from orekit.pyhelpers import absolutedate_to_datetime, datetime_to_absolutedate
+
+from org.orekit.propagation import SpacecraftState, BoundedPropagator
 
 
 def create_ephemeris_header(object_name: str, initial_date: dt, final_date: dt) -> str:
@@ -27,10 +32,9 @@ def create_ephemeris_header(object_name: str, initial_date: dt, final_date: dt) 
     INTERPOLATION        = Lagrange
     INTERPOLATION_DEGREE = 5
     META_STOP
-
     """
 
-    return inspect.cleandoc(header)
+    return inspect.cleandoc(header) + "\n"
 
 
 def create_oem_data(states: List) -> str:
@@ -53,7 +57,7 @@ def create_oem_data(states: List) -> str:
     return output
 
 
-def createOem(object_name: str, initial_date: dt, final_date: dt, states: List) -> str:
+def create_oem(object_name: str, initial_date: dt, final_date: dt, states: List) -> str:
 
     header = create_ephemeris_header(object_name, initial_date, final_date)
     data = create_oem_data(states)
@@ -61,7 +65,56 @@ def createOem(object_name: str, initial_date: dt, final_date: dt, states: List) 
     return header + data
 
 
-def save_oem_to_file(object_name: str, oem: str):
+def save_oem_to_file(prefix: Path | None, object_name: str, oem: str):
 
-    with open(object_name + ".oem", "w+") as fp:
+    filepath = Path(object_name).with_suffix(".oem")
+    if prefix:
+        filepath = prefix.joinpath(filepath)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+    with open(filepath, "w+") as fp:
         fp.write(oem)
+
+
+def save_final_states(states_to_save: list[SpacecraftState]):
+
+    with open("final_states.txt", "w+") as fp:
+        for state in states_to_save:
+            fp.write(
+                f"{state.getDate().toString()} {state.getPVCoordinates().toString()}\n"
+            )
+
+
+def save_shooter_ephemeris(
+    ephemeris_generators_array: list[BoundedPropagator],
+    prefix: str | None = None,
+):
+
+    for idx, generator in enumerate(ephemeris_generators_array):
+
+        min_date = absolutedate_to_datetime(generator.getMinDate())
+        max_date = absolutedate_to_datetime(generator.getMaxDate())
+        object_name = f"SeparatedSat{idx+1}"
+
+        step = 60
+        propagation_time = (max_date - min_date).total_seconds()
+        samples = int(propagation_time / step)
+        linspace = np.linspace(
+            min_date,
+            max_date,
+            samples + 1,
+        )
+
+        states = []
+        for date_ in linspace:
+            state = generator.propagate(datetime_to_absolutedate(date_))
+            states.append(state.getPVCoordinates())
+
+        oem = create_oem(
+            object_name,
+            min_date,
+            max_date,
+            states,
+        )
+        if prefix:
+            prefix = Path(prefix)
+        save_oem_to_file(prefix, object_name, oem)
