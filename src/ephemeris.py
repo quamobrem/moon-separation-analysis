@@ -1,5 +1,6 @@
 from datetime import datetime as dt
 import inspect
+import os
 from pathlib import Path
 from typing import List
 
@@ -8,6 +9,10 @@ import numpy as np
 from orekit.pyhelpers import absolutedate_to_datetime, datetime_to_absolutedate
 
 from org.orekit.propagation import SpacecraftState, BoundedPropagator
+from org.orekit.utils import TimeStampedPVCoordinates
+
+
+EPHEMERIS_RECORDS_TIMESTEP = float(os.getenv("EPHEMERIS_RECORDS_TIMESTEP", 60))
 
 
 def create_ephemeris_header(object_name: str, initial_date: dt, final_date: dt) -> str:
@@ -84,36 +89,54 @@ def save_final_states(states_to_save: list[SpacecraftState]):
             )
 
 
+def unravel_bounded_propagator(
+    bounded_propagator: BoundedPropagator,
+) -> List[TimeStampedPVCoordinates]:
+
+    min_date = absolutedate_to_datetime(bounded_propagator.getMinDate())
+    max_date = absolutedate_to_datetime(bounded_propagator.getMaxDate())
+
+    step = EPHEMERIS_RECORDS_TIMESTEP
+    propagation_time = (max_date - min_date).total_seconds()
+    samples = int(propagation_time / step)
+    linspace = np.linspace(
+        min_date,
+        max_date,
+        samples + 1,
+    )
+
+    states = []
+    for date_ in linspace:
+        state = bounded_propagator.propagate(datetime_to_absolutedate(date_))
+        states.append(state.getPVCoordinates())
+
+    return states
+
+
 def save_shooter_ephemeris(
-    ephemeris_generators_array: list[BoundedPropagator],
+    ephemeris_array_of_arrays: List[List[TimeStampedPVCoordinates]],
     prefix: str | None = None,
 ):
 
-    for idx, generator in enumerate(ephemeris_generators_array):
+    for idx, timestamped_pv_coordinates_array in enumerate(ephemeris_array_of_arrays):
 
-        min_date = absolutedate_to_datetime(generator.getMinDate())
-        max_date = absolutedate_to_datetime(generator.getMaxDate())
-        object_name = f"SeparatedSat{idx+1}"
-
-        step = 60
-        propagation_time = (max_date - min_date).total_seconds()
-        samples = int(propagation_time / step)
-        linspace = np.linspace(
-            min_date,
-            max_date,
-            samples + 1,
+        min_date = absolutedate_to_datetime(
+            timestamped_pv_coordinates_array[0].getDate()
+        )
+        max_date = absolutedate_to_datetime(
+            timestamped_pv_coordinates_array[-1].getDate()
         )
 
-        states = []
-        for date_ in linspace:
-            state = generator.propagate(datetime_to_absolutedate(date_))
-            states.append(state.getPVCoordinates())
+        if idx == 0:
+            object_name = "ReferenceSat"
+        else:
+            object_name = f"SeparatedSat{idx}"
 
         oem = create_oem(
             object_name,
             min_date,
             max_date,
-            states,
+            timestamped_pv_coordinates_array,
         )
         if prefix:
             prefix = Path(prefix)

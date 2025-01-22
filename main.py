@@ -3,7 +3,7 @@ import logging
 from math import degrees, radians
 from datetime import datetime as dt
 import os
-from typing import Dict
+from typing import Dict, Tuple
 import numpy as np
 from scipy.stats import norm
 import matplotlib.pyplot as plt
@@ -22,6 +22,7 @@ from org.orekit.time import AbsoluteDate, TimeScalesFactory
 from org.orekit.utils import Constants
 from org.orekit.frames import FramesFactory, Transform, Frame
 
+from org.orekit.propagation import BoundedPropagator
 from org.orekit.propagation.numerical import NumericalPropagator
 from org.hipparchus.ode.nonstiff import DormandPrince853Integrator
 from org.orekit.propagation import SpacecraftState
@@ -34,7 +35,11 @@ from org.orekit.forces.maneuvers import SmallManeuverAnalyticalModel
 
 from orekit import JArray_double
 
-from src.ephemeris import save_final_states, save_shooter_ephemeris
+from src.ephemeris import (
+    save_final_states,
+    save_shooter_ephemeris,
+    unravel_bounded_propagator,
+)
 from src.plots import plot_separation_as_function_of_dv
 from src.utils import get_true_anomaly_from_equinoctial, wrap_to_2_pi
 
@@ -194,17 +199,23 @@ def setup_propagation_context(initialDate: AbsoluteDate, initialOrbit: Keplerian
 
 def propagate_to_chosen_apsis(
     propagator: NumericalPropagator,
-    initialDate: AbsoluteDate,
+    starting_state: SpacecraftState,
     propagate_by_duration: float,
     target_apsis: str,
-):
+) -> Tuple[SpacecraftState, BoundedPropagator]:
     target_true_anomaly = 0.0 if target_apsis == "periapsis" else 180.0
-    _date = initialDate
+    _date = starting_state.getDate()
+    generator = propagator.getEphemerisGenerator()
+    ephemeris = []
+    module_logger.debug(
+        f"Resetting propagator at perturbed_state date of {starting_state.getDate().toString()}"
+    )
+    propagator.resetInitialState(starting_state)
     while True:
-        state = propagator.propagate(_date.shiftedBy(propagate_by_duration))
+        end_state = propagator.propagate(_date.shiftedBy(propagate_by_duration))
 
         true_anomaly_from_equinoctial = degrees(
-            wrap_to_2_pi(get_true_anomaly_from_equinoctial(state))
+            wrap_to_2_pi(get_true_anomaly_from_equinoctial(end_state))
         )
         module_logger.debug(f"Propagated to {true_anomaly_from_equinoctial=}")
         if (
@@ -212,16 +223,18 @@ def propagate_to_chosen_apsis(
             < APSIS_CATEGORIZATION_TRUE_ANOMALY_TOLERANCE_DEG
         ):
             module_logger.info(
-                f"Reached {target_apsis=} at {state.getDate()}: state = {state}"
+                f"Reached {target_apsis=} at {end_state.getDate()}: state = {end_state}"
             )
             break
         else:
             module_logger.debug(
-                f"Propagation reached an ApsideEvent at {state.getDate()}: state = {state}. Updating the date and continuing..."
+                f"Propagation reached an ApsideEvent at {end_state.getDate()}: state = {end_state}. Updating the date and continuing..."
             )
-            _date = state.getDate()
+            _date = end_state.getDate()
 
-    return state
+        ephemeris.extend(unravel_bounded_propagator(generator.getGeneratedEphemeris()))
+
+    return end_state, ephemeris
 
 
 def create_prograde_impulse(state, dv):
@@ -244,38 +257,41 @@ def shooter(
 
     module_logger.warning("Starting shooting procedure...")
     propagated_states_map = {}
-    ephem_generators_map = {}
+    ephem_map = {}
     dv_distribution = norm(loc=dv_initial_guess, scale=perturbation)
     dvs_array = dv_distribution.rvs(size=number_of_parallel_trajectories)
     module_logger.info(
         f"Starting with an initial guess for the DV of {dv_initial_guess}, "
         f"and performing {number_of_parallel_trajectories} perturbatios with STD {perturbation}"
     )
+    dvs_array = np.insert(dvs_array, 0, [0.0])
     for cnt, dv in enumerate(dvs_array):
 
-        module_logger.info(f"Performing perturbation {cnt+1} of {len(dvs_array)}")
+        if cnt == 0:
+            module_logger.info("Propagating the unperturbed trajectory")
+        else:
+            module_logger.info(
+                f"Performing perturbation {cnt} of {len(dvs_array)}, imposing a dV of {dv} m/s"
+            )
         impulse = create_prograde_impulse(initial_state, dv)
-        perturbed_state = impulse.apply(initial_state.shiftedBy(1.0))
-        generator = propagator.getEphemerisGenerator()
-        module_logger.debug(
-            f"Resetting propagator at perturbed_state date of {perturbed_state.getDate().toString()}"
+        perturbed_state = impulse.apply(
+            initial_state.shiftedBy(1.0)
+        )  # Must shift the time by at least 1 second for the impulse to be applied
+
+        state_at_chosen_apsis, ephemeris = propagate_to_chosen_apsis(
+            propagator,
+            perturbed_state,
+            perturbed_state.getKeplerianPeriod(),
+            shoot_to_apsis,
         )
-        propagator.resetInitialState(perturbed_state)
-        propagated_states_map.update(
-            {
-                dv: propagate_to_chosen_apsis(
-                    propagator,
-                    perturbed_state.getDate(),
-                    perturbed_state.getKeplerianPeriod(),
-                    shoot_to_apsis,
-                )
-            }
-        )
-        ephem_generators_map.update({dv: generator.getGeneratedEphemeris()})
+        propagated_states_map.update({dv: state_at_chosen_apsis})
+        ephem_map.update({cnt: ephemeris})
 
     module_logger.info("Finished shooting")
 
-    return propagated_states_map, ephem_generators_map
+    unperturbed_final_state = propagated_states_map.pop(0.0)
+
+    return unperturbed_final_state, propagated_states_map, ephem_map
 
 
 def calc_separation(
@@ -361,23 +377,17 @@ def main():
             initialOrbit=initialOrbit, initialState=initialState
         )
 
-        state_at_separation = propagate_to_chosen_apsis(
+        state_at_separation, _ = propagate_to_chosen_apsis(
             propagator_num,
-            initialDate,
+            initialState,
             initialOrbit.getKeplerianPeriod(),
             impulse_at_which_apsis,
         )
         module_logger.info(
             f"Simulating separation at epoch {absolutedate_to_datetime(state_at_separation.getDate()).isoformat()}"
         )
-        state_after_one_rev = propagate_to_chosen_apsis(
-            propagator_num,
-            state_at_separation.getDate(),
-            state_at_separation.getKeplerianPeriod(),
-            impulse_at_which_apsis,
-        )
 
-        dv_states_map, ephem_generators_map = shooter(
+        reference_final_state, dv_states_map, ephem_generators_map = shooter(
             state_at_separation,
             propagator_num,
             1.0,
@@ -386,7 +396,7 @@ def main():
         )
 
         dv_separations_map = process_rics_at_final_epoch(
-            state_after_one_rev, dv_states_map
+            reference_final_state, dv_states_map
         )
 
         save_shooter_ephemeris(
