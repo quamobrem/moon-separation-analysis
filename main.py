@@ -15,7 +15,7 @@ from orekit.pyhelpers import (
     datetime_to_absolutedate,
 )
 
-from org.hipparchus.geometry.euclidean.threed import Vector3D
+from org.hipparchus.geometry.euclidean.threed import Vector3D, Rotation
 from org.orekit.bodies import CelestialBodyFactory
 from org.orekit.orbits import KeplerianOrbit, PositionAngleType
 from org.orekit.time import AbsoluteDate, TimeScalesFactory
@@ -211,7 +211,8 @@ def propagate_to_chosen_apsis(
         f"Resetting propagator at perturbed_state date of {starting_state.getDate().toString()}"
     )
     propagator.resetInitialState(starting_state)
-    while True:
+    condition = True
+    while condition:
         end_state = propagator.propagate(_date.shiftedBy(propagate_by_duration))
 
         true_anomaly_from_equinoctial = degrees(
@@ -225,7 +226,7 @@ def propagate_to_chosen_apsis(
             module_logger.info(
                 f"Reached {target_apsis=} at {end_state.getDate()}: state = {end_state}"
             )
-            break
+            condition = False
         else:
             module_logger.debug(
                 f"Propagation reached an ApsideEvent at {end_state.getDate()}: state = {end_state}. Updating the date and continuing..."
@@ -239,10 +240,12 @@ def propagate_to_chosen_apsis(
 
 def create_prograde_impulse(state, dv):
 
+    # Creating the impulse via SmallManeuverAnalyticalModel. Without specifying the Frame,
+    # the dV vector is assumed in the spacecraft body frame, instead of in RTN. So have to set the X to -1
+    # A completely made up Isp, but reasonable; besides, I am not calculating mass decrements
     impulse = SmallManeuverAnalyticalModel(
-        state, Vector3D(float(dv), 0.0, 0.0), 340.0
-    )  # A completely made up Isp, but reasonable; besides, I am not calculating mass decrements
-
+        state, Vector3D(-1 * float(dv), 0.0, 0.0), 340.0
+    )
     return impulse
 
 
@@ -298,29 +301,64 @@ def calc_separation(
     primary_state: SpacecraftState, secondary_state: SpacecraftState
 ) -> float:
 
-    # First make sure the two states are indeed at the same time, if not shift the secondary.
-    # Orekit can shift the secondary by small margins directly via Keplerian + quadratic effects, which is okay over small steps
-    _primary_date = absolutedate_to_datetime(primary_state.getDate())
-    _secondary_date = absolutedate_to_datetime(secondary_state.getDate())
-    # if _primary_date != _secondary_date:
-    #     module_logger.debug(
-    #         f"Processing RIC. Primary state epoch: {_primary_date}; Secondary state epoch: {_secondary_date}"
-    #     )
-    #     secondary_state = secondary_state.shiftedBy(
-    #         (_primary_date - _secondary_date).total_seconds()
-    #     )
+    # Interpolate the secondary state at the same date of the primary
+    # This can easily be achieved by Orekit via Keplerian + quadratic propagation,
+    # which is accurate enough for small shifts. Both forward and backward propagation are allowed
+    primary_epoch = absolutedate_to_datetime(primary_state.getDate())
+    secondary_epoch = absolutedate_to_datetime(secondary_state.getDate())
+    shift = (primary_epoch - secondary_epoch).total_seconds()
+    secondary_state_shifted = secondary_state.shiftedBy(shift)
+
+    # Forming the RIC frame transform
+    primary_pos_inertial = np.array(
+        primary_state.getPVCoordinates().getPosition().toArray()
+    )
+    secondary_pos_inertial = np.array(
+        secondary_state_shifted.getPVCoordinates().getPosition().toArray()
+    )
+    primary_vel_inertial = np.array(
+        primary_state.getPVCoordinates().getVelocity().toArray()
+    )
+    secondary_vel_inertial = np.array(
+        secondary_state_shifted.getPVCoordinates().getVelocity().toArray()
+    )
+
+    R = primary_pos_inertial / np.linalg.vector_norm(primary_pos_inertial)
+    r_cross_v = np.cross(primary_pos_inertial, primary_vel_inertial)
+    r_cross_v_norm = np.linalg.vector_norm(r_cross_v)
+    I = r_cross_v / r_cross_v_norm
+    C = np.cross(I, R)
+
+    DCM_inertial_to_RIC = [R, I, C]
 
     x_distance = (
-        primary_state.getPosition().getX() - secondary_state.getPosition().getX()
+        primary_state.getPVCoordinates().getPosition().getX()
+        - secondary_state_shifted.getPVCoordinates().getPosition().getX()
     )
     y_distance = (
-        primary_state.getPosition().getY() - secondary_state.getPosition().getY()
+        primary_state.getPVCoordinates().getPosition().getY()
+        - secondary_state_shifted.getPVCoordinates().getPosition().getY()
     )
     z_distance = (
-        primary_state.getPosition().getZ() - secondary_state.getPosition().getZ()
+        primary_state.getPVCoordinates().getPosition().getZ()
+        - secondary_state_shifted.getPVCoordinates().getPosition().getZ()
     )
 
-    return Vector3D(x_distance, y_distance, z_distance).getNorm()
+    distance_vector_inertial = np.array([x_distance, y_distance, z_distance])
+
+    distance_vector_RIC = np.matmul(DCM_inertial_to_RIC, distance_vector_inertial)
+
+    module_logger.debug(
+        f"Calculated RIC between reference and perturbed trajectory. "
+        f"Epoch: {primary_state.getDate().toString()}. "
+        f"Primary position [km]: {primary_pos_inertial / 1000}. "
+        f"Primary velocity [km/sec]: {primary_vel_inertial / 1000}. "
+        f"Secondary position [km]: {secondary_pos_inertial / 1000}. "
+        f"Secondary position [km/sec]: {secondary_vel_inertial / 1000}. "
+        f"RIC: {distance_vector_RIC}"
+    )
+
+    return np.sqrt(np.sum([i**2 for i in distance_vector_RIC]))
 
 
 def process_rics_at_final_epoch(
