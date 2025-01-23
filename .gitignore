@@ -5,3 +5,5 @@ orekit-data
 .vscode
 */**/__pycache__
 __pycache__
+final_states.txt
+.idea
