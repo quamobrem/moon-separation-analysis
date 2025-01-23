@@ -41,7 +41,12 @@ from src.ephemeris import (
     save_shooter_ephemeris,
     unravel_bounded_propagator,
 )
-from src.plots import plot_fitted_curve, plot_root, scatter_separation_as_function_of_dv
+from src.reporting import (
+    plot_fitted_curve,
+    plot_root,
+    report_results,
+    scatter_separation_as_function_of_dv,
+)
 from src.utils import get_true_anomaly_from_equinoctial, wrap_to_2_pi
 
 
@@ -251,6 +256,22 @@ def create_prograde_impulse(state, dv):
     return impulse
 
 
+def final_propagation(
+    propagator: NumericalPropagator,
+    initial_state: SpacecraftState,
+    solved_dv: float,
+    impulse_at_which_apsis: str,
+):
+    impulse = create_prograde_impulse(initial_state, solved_dv)
+    perturbed_state = impulse.apply(initial_state.shiftedBy(1.0))
+    return propagate_to_chosen_apsis(
+        propagator,
+        perturbed_state,
+        perturbed_state.getKeplerianPeriod(),
+        impulse_at_which_apsis,
+    )
+
+
 def shooter(
     initial_state: SpacecraftState,
     propagator: NumericalPropagator,
@@ -404,11 +425,11 @@ def root_finder(
     updated_coefficients = coefficients.copy()
     updated_coefficients[-1] = coefficients[-1] - desired_value
 
-    root, _, converged, _ = newton(
+    root, results = newton(
         func, initial_guess, args=updated_coefficients, full_output=True
     )
 
-    module_logger.debug(f"Newton root finding: convergence={converged}")
+    module_logger.debug(f"Newton root finding: convergence={results.converged}")
 
     return root
 
@@ -480,6 +501,18 @@ def main():
 
         root = root_finder(func, coefficients, dV_initial_guess, separation_to_achieve)
 
+        final_state, _ = final_propagation(
+            propagator_num, state_at_separation, root, impulse_at_which_apsis
+        )
+
+        report_results(
+            root,
+            separation_to_achieve,
+            impulse_at_which_apsis,
+            state_at_separation,
+            final_state,
+        )
+
         fig, ax = plt.subplots()
         ax = scatter_separation_as_function_of_dv(
             ax, impulse_at_which_apsis, dv_separations_map
@@ -492,7 +525,7 @@ def main():
         ax = plot_root(ax, root, separation_to_achieve)
 
         ax.legend()
-        plt.savefig("final_plot.png")
+        fig.savefig("final_plot.png")
 
         save_shooter_ephemeris(
             ephem_generators_map.values(),
