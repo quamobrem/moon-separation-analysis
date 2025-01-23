@@ -1,0 +1,10 @@
+.venv
+orekit-data
+*.oem
+*.ipynb
+.vscode
+*/**/__pycache__
+__pycache__
+final_states.txt
+.idea
+*.png
