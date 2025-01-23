@@ -6,6 +6,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
 
+from org.orekit.propagation import SpacecraftState
+
+
 matplotlib_logger = logging.getLogger("matplotlib")
 matplotlib_logger.setLevel(logging.INFO)
 PIL_logger = logging.getLogger("PIL")
@@ -47,3 +50,22 @@ def plot_root(ax: Axes, root: float, image: float):
         marker="*",
     )
     return ax
+
+
+def report_results(
+    solution: float,
+    desired_separation: float,
+    apsis_of_separation: str,
+    state_at_separation: SpacecraftState,
+    final_state: SpacecraftState,
+):
+    print(
+        f"Final Solution Reporting\n"
+        f"========================\n"
+        f"A prograde impulsive dV of {solution} m/sec, applied at {apsis_of_separation}, achieves the desired separation of {desired_separation} m "
+        f"after a one orbital revolution.\n"
+        f"========================\n"
+        f"The states at separation and the final state follow, expressed in a ICRF-oriented, Moon Centered Frame:\n"
+        f"The state at separation is {state_at_separation.getPVCoordinates()}\n"
+        f"The final state is {final_state.getPVCoordinates()}"
+    )
