@@ -7,3 +7,4 @@ orekit-data
 __pycache__
 final_states.txt
 .idea
+*.png
