@@ -3,9 +3,10 @@ import logging
 from math import degrees, radians
 from datetime import datetime as dt
 import os
-from typing import Dict, Tuple
+from typing import Callable, Dict, List, Tuple
 import numpy as np
 from scipy.stats import norm
+from scipy.optimize import curve_fit, newton
 import matplotlib.pyplot as plt
 
 import orekit
@@ -40,7 +41,7 @@ from src.ephemeris import (
     save_shooter_ephemeris,
     unravel_bounded_propagator,
 )
-from src.plots import plot_separation_as_function_of_dv
+from src.plots import plot_fitted_curve, plot_root, scatter_separation_as_function_of_dv
 from src.utils import get_true_anomaly_from_equinoctial, wrap_to_2_pi
 
 
@@ -88,6 +89,7 @@ def get_input_args():
     parser.add_argument("-w", "--argument_of_periapsis", default=270.0)
     parser.add_argument("-ta", "--true_anomaly", default=0.0)
     parser.add_argument("--spacecraft_masses", default=100)
+    parser.add_argument("--dV_initial_guess", default=1.0)
     parser.add_argument("--separation_to_achieve", default=10_000)
     parser.add_argument(
         "--impulse_at_which_apsis",
@@ -377,6 +379,40 @@ def process_rics_at_final_epoch(
     return dvs_ric_map
 
 
+def get_curve_fit(x, y):
+
+    # A 3rd degree polynomial is probably overkill because the relationship is very linear
+    def polynomial(x, a, b, c, d):
+        return a * x**3 + b * x**2 + c * x + d
+
+    popt, _ = curve_fit(polynomial, x, y)
+
+    module_logger.debug(
+        f"The curve fit of the dV data produced the following coefficients a * x**3 + b * x**2 + c * x + d = {popt}"
+    )
+
+    return polynomial, popt
+
+
+def root_finder(
+    func: Callable,
+    coefficients: List[float],
+    initial_guess: float,
+    desired_value: float,
+) -> float:
+
+    updated_coefficients = coefficients.copy()
+    updated_coefficients[-1] = coefficients[-1] - desired_value
+
+    root, _, converged, _ = newton(
+        func, initial_guess, args=updated_coefficients, full_output=True
+    )
+
+    module_logger.debug(f"Newton root finding: convergence={converged}")
+
+    return root
+
+
 def main():
     try:
         setup_orekit()
@@ -392,6 +428,7 @@ def main():
         argument_of_periapsis = radians(args.argument_of_periapsis)
         true_anomaly = radians(args.true_anomaly)
         spacecraft_masses = args.spacecraft_masses
+        dV_initial_guess = args.dV_initial_guess
         separation_to_achieve = args.separation_to_achieve
         impulse_at_which_apsis = args.impulse_at_which_apsis
 
@@ -428,21 +465,39 @@ def main():
         reference_final_state, dv_states_map, ephem_generators_map = shooter(
             state_at_separation,
             propagator_num,
-            1.0,
+            dV_initial_guess,
             impulse_at_which_apsis,
-            perturbation=0.1,
+            perturbation=dV_initial_guess / 10,
         )
 
         dv_separations_map = process_rics_at_final_epoch(
             reference_final_state, dv_states_map
         )
 
+        func, coefficients = get_curve_fit(
+            list(dv_separations_map.keys()), list(dv_separations_map.values())
+        )
+
+        root = root_finder(func, coefficients, dV_initial_guess, separation_to_achieve)
+
+        fig, ax = plt.subplots()
+        ax = scatter_separation_as_function_of_dv(
+            ax, impulse_at_which_apsis, dv_separations_map
+        )
+
+        ax = plot_fitted_curve(
+            ax, np.array(list(dv_separations_map.keys())), func, coefficients
+        )
+
+        ax = plot_root(ax, root, separation_to_achieve)
+
+        ax.legend()
+        plt.savefig("final_plot.png")
+
         save_shooter_ephemeris(
             ephem_generators_map.values(),
             "shooting",
         )
-        plot_separation_as_function_of_dv(impulse_at_which_apsis, dv_separations_map)
-
     except Exception as global_exc:
         print(f"Global unhandled exception caught: {global_exc}")
         raise
