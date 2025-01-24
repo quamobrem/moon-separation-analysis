@@ -8,11 +8,6 @@ from main import *
 from src.utils import *
 
 
-@pytest.fixture(autouse=True, scope="session")
-def init_orekit():
-    setup_orekit()
-
-
 def test_wrap2_pi():
 
     angle = 540.0
