@@ -23,10 +23,10 @@ The app can be run as a python module directly or via a Docker container for eas
 To setup for running as a Python module:
 
 1. install `conda` from https://github.com/conda-forge/miniforge?tab=readme-ov-file#install
-2. create a new `conda` environment with `conda create -n <choose a name for the environment> -f environment.yml`
+2. create a new `conda` environment with `conda env create -n <choose a name for the environment> -f environment.yml`
     1. this will create the virtual environment and install the necessary dependencies
 3. initialize the environment by running `conda init`
-4. activate the environment by running `conda activate`
+4. activate the environment by running `conda activate -n <the environment name you chose>`
 5. verify the activation of the environment by running `python -m main -h`. This will load up the main dependencies and 
    print the command line options available. 
 
