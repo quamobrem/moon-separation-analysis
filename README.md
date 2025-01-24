@@ -94,4 +94,6 @@ There are several improvements that could be done to this application.
 1. Although potentially unnecessary, the Monte Carlo approach could be useful for similar scenarios. Orekit provides `Field` classes specifically made for this purpose and parallel propagation capabilities that I think would be worth investigating.
 1. `conda` is unfortunately needed for `orekit` python wrapper. The `miniforge` Docker images are very bloated. Skipping the wrapper could solve this directly. Otherwise, a multistage 
    Docker build could help get away with just the environment and not `conda`. 
+1. I didn't have the time unfortunately to get to test the entire application, so more tests would be needed. 
+2. The code could use more documentation. 
 
